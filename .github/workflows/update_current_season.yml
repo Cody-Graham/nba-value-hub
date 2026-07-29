@@ -1,0 +1,58 @@
+name: Update Current Season Data
+
+on:
+  schedule:
+    - cron: '0 10 * * 1'
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas pyarrow requests lxml html5lib
+
+      - name: Determine current season end year
+        id: season
+        run: |
+          MONTH=$(date +%m)
+          YEAR=$(date +%Y)
+          if [ "$MONTH" -ge 10 ]; then
+            END_YEAR=$((YEAR + 1))
+          else
+            END_YEAR=$YEAR
+          fi
+          echo "end_year=$END_YEAR" >> $GITHUB_OUTPUT
+          echo "Current season end year: $END_YEAR"
+
+      - name: Scrape current season stats
+        run: |
+          python scripts/fetch_season_bref.py --year ${{ steps.season.outputs.end_year }} --outdir data/current
+
+      - name: Scrape current salaries
+        run: |
+          python scripts/fetch_salaries_bref.py
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/current/
+          if git diff --staged --quiet; then
+            echo "No data changes"
+          else
+            git commit -m "chore: weekly update of current season data"
+            git push
+          fi
