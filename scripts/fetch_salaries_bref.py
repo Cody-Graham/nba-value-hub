@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
-"""
-Fetch NBA player salaries from Basketball-Reference contracts page.
-Outputs a clean Parquet for joining with the stats we already loaded.
-"""
-
-import argparse
 from pathlib import Path
 import pandas as pd
 import requests
 from io import StringIO
-
-RAW_DIR = Path(__file__).resolve().parents[1] / "data" / "raw"
-RAW_DIR.mkdir(parents=True, exist_ok=True)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -19,8 +10,7 @@ HEADERS = {
     "Referer": "https://www.basketball-reference.com/",
 }
 
-
-def fetch_contracts() -> pd.DataFrame:
+def fetch_current_salaries() -> pd.DataFrame:
     url = "https://www.basketball-reference.com/contracts/players.html"
     print(f"Fetching {url}")
 
@@ -30,33 +20,31 @@ def fetch_contracts() -> pd.DataFrame:
     tables = pd.read_html(StringIO(response.text))
     df = tables[0]
 
-    # BRef puts a multi-level header on this table – flatten it
     if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [" ".join(col).strip() for col in df.columns.values]
+        df.columns = ["_".join(str(c) for c in col).strip() for col in df.columns.values]
 
-    # Standard cleaning
-    df = df[df.iloc[:, 0] != "Rk"].copy()          # remove repeated header rows
-    df = df.rename(columns={df.columns[1]: "PLAYER_NAME", df.columns[2]: "Team"})
+    first_col = df.columns[0]
+    df = df[df[first_col] != "Rk"].copy()
 
-    # Keep useful columns (the exact names can shift slightly by season)
-    # We look for the 2025-26 salary column
+    df = df.rename(columns={
+        df.columns[1]: "PLAYER_NAME",
+        df.columns[2]: "Team"
+    })
+
     salary_col = None
     for col in df.columns:
-        if "2025-26" in str(col) or "2025/26" in str(col):
+        col_str = str(col)
+        if "2025-26" in col_str or "2026-27" in col_str or "2024-25" in col_str:
             salary_col = col
             break
-
     if salary_col is None:
-        # fallback – take the first salary-like column after Team
-        for col in df.columns[3:]:
-            if df[col].dtype == object or "Salary" in str(col) or "$" in str(col):
-                salary_col = col
-                break
+        for col in df.columns[3:8]:
+            salary_col = col
+            break
 
     print(f"Using salary column: {salary_col}")
 
     keep = ["PLAYER_NAME", "Team", salary_col]
-    # also keep Guaranteed if it exists
     for col in df.columns:
         if "Guaranteed" in str(col):
             keep.append(col)
@@ -65,38 +53,26 @@ def fetch_contracts() -> pd.DataFrame:
     df = df[keep].copy()
     df = df.rename(columns={salary_col: "base_salary"})
 
-    # Clean salary values (remove $ and commas)
-    df["base_salary"] = (
-        df["base_salary"]
-        .astype(str)
-        .str.replace(r"[\$,]", "", regex=True)
-        .replace(["", "nan", "None"], None)
-    )
-    df["base_salary"] = pd.to_numeric(df["base_salary"], errors="coerce")
-
-    if "Guaranteed" in df.columns:
-        df["Guaranteed"] = (
-            df["Guaranteed"]
-            .astype(str)
-            .str.replace(r"[\$,]", "", regex=True)
-            .replace(["", "nan", "None"], None)
-        )
-        df["Guaranteed"] = pd.to_numeric(df["Guaranteed"], errors="coerce")
+    for col in ["base_salary", "Guaranteed"]:
+        if col in df.columns:
+            df[col] = (
+                df[col].astype(str)
+                .str.replace(r"[\$,]", "", regex=True)
+                .replace(["", "nan", "None", "–", "-"], None)
+            )
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df["SEASON"] = "2025-26"
     df = df.dropna(subset=["PLAYER_NAME", "base_salary"])
-
     return df
 
-
 def main():
-    df = fetch_contracts()
-    out_path = RAW_DIR / "player_salaries_bref_2026.parquet"
+    df = fetch_current_salaries()
+    out_dir = Path(__file__).resolve().parents[1] / "data" / "current"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "player_salaries_current.parquet"
     df.to_parquet(out_path, index=False)
-    print(f"\nSuccess! Wrote {len(df)} rows → {out_path}")
-    print(df.head(10).to_string())
-    print(f"\nColumns: {list(df.columns)}")
-
+    print(f"Wrote {len(df)} rows → {out_path}")
 
 if __name__ == "__main__":
     main()
